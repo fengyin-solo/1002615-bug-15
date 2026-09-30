@@ -28,6 +28,36 @@ class EntryPayload(BaseModel):
     remark: str | None = None
 
 
+class SettlementPayload(BaseModel):
+    """结算清单生成请求。
+
+    resume=true 表示上次生成中途失败，从记录的失败行继续；
+    fail_after_line 只用于本地/测试环境模拟「中途打断」。
+    """
+
+    resume: bool = False
+    fail_after_line: int | None = None
+
+
+class SettlementView(BaseModel):
+    """结算清单生成结果：状态、差异说明与最新一版清单都在这里。"""
+
+    ok: bool
+    status: str
+    message: str
+    job_id: int | None = None
+    version: int | None = None
+    total_lines: int = 0
+    failed_line: int | None = None
+    next_line: int | None = None
+    discrepancy: dict[str, Any] | None = None
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+    snapshot: dict[str, Any] | None = None
+    latest: dict[str, Any] | None = None
+    live_audit: dict[str, Any] | None = None
+    superseded: bool = False
+
+
 
 class FlightstandEntry(BaseModel):
     """机位明细结构。"""

@@ -5,14 +5,19 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.fueling import FuelingService
+from app.schemas import ActionResult, EntryPayload, PageResult, SettlementPayload, SettlementView
+from app.services.fueling import (
+    SETTLEMENT_COLUMNS,
+    SettlementAborted,
+    FuelingService,
+)
 
 router = APIRouter(prefix="/api/fueling", tags=["航油加注"])
 
 service = FuelingService()
 
-LIST_FIELDS = ["加油编号", "对应航班", "油料类型", "计划油量", "实际油量", "加油车辆", "操作人员", "加油状态"]
+# 与结算模板完全一致的表头顺序，列表页/导出/结算快照共用，杜绝错位。
+LIST_FIELDS = SETTLEMENT_COLUMNS
 STATUSES = ["待加油", "加油中", "已加注", "已签收"]
 
 
@@ -28,6 +33,38 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/settlement", response_model=SettlementView)
+def settlement_state() -> SettlementView:
+    """读取最新一版结算清单与实时对账条数（历史条数每次重算）。"""
+    return SettlementView(**service.settlement_state())
+
+
+@router.post("/settlement", response_model=SettlementView)
+def generate_settlement(payload: SettlementPayload) -> SettlementView:
+    """生成结算清单：先自检三端条数，再逐行产出；失败可带 resume 从失败行续算。"""
+    try:
+        result = service.generate_settlement(resume=payload.resume, fail_after_line=payload.fail_after_line)
+    except SettlementAborted as exc:
+        raise HTTPException(status_code=409, detail=exc.discrepancy or {"message": str(exc)})
+    return SettlementView(**result)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出已发布的结算清单快照；尚未成功生成过清单时给出可读说明，不导出半份。"""
+    state = service.settlement_state()
+    snapshot = state.get("latest")
+    if snapshot is None:
+        return {
+            "module": "fueling",
+            "total": 0,
+            "columns": SETTLEMENT_COLUMNS,
+            "items": [],
+            "message": state["message"],
+        }
+    return {"module": "fueling", "total": snapshot["total"], **snapshot}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -52,14 +89,7 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     """对单条加油任务执行开始加油、完成加注、签收确认；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出航油加注清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "fueling", "total": total, "items": items}
