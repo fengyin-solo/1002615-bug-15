@@ -1,4 +1,4 @@
-"""航油加注接口：维护加油任务，覆盖开始加油、完成加注、签收确认等动作。"""
+"""航油加注接口：维护加油任务，覆盖开始加油、完成加注、签收确认与结算清单出单。"""
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +12,6 @@ router = APIRouter(prefix="/api/fueling", tags=["航油加注"])
 
 service = FuelingService()
 
-LIST_FIELDS = ["加油编号", "对应航班", "油料类型", "计划油量", "实际油量", "加油车辆", "操作人员", "加油状态"]
 STATUSES = ["待加油", "加油中", "已加注", "已签收"]
 
 
@@ -28,6 +27,27 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/settlement")
+def get_settlement() -> dict[str, Any]:
+    """读取最近一次结算清单出单状态：最新一版结果、最近中止现场与版本计数。"""
+    return service.latest_settlement()
+
+
+@router.post("/settlement/generate")
+def generate_settlement(resume: bool = Query(default=False, description="从上一版失败行继续自检")) -> dict[str, Any]:
+    """生成结算清单：出单前自检字段、油量与三处条数，不通过即中止且不落半份清单。"""
+    return service.generate_settlement(resume=resume)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出航油加注结算清单：已出单时返回最新一版，未出单时按结算模板即时自检生成。"""
+    latest = service.latest_settlement()
+    if latest["published"] is not None:
+        return latest["published"]
+    return service.generate_settlement()
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -48,6 +68,15 @@ def create_entry(payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message="加油任务已登记", entry=entry)
 
 
+@router.patch("/{entry_id}", response_model=ActionResult)
+def update_entry(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """补录修正被结算自检拦下的行（车辆、油量、操作人员等），修正后可从失败行续作。"""
+    entry, message = service.update_entry(entry_id, payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=f"加油任务 {entry_id} 已补录修正", entry=entry)
+
+
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     """对单条加油任务执行开始加油、完成加注、签收确认；不允许的动作会被拦下并说明原因。"""
@@ -56,10 +85,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出航油加注清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "fueling", "total": total, "items": items}

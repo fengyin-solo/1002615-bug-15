@@ -76,3 +76,20 @@ npm run dev
   `backend/app/routers/<模块>.py`，业务规则在 `backend/app/services/<模块>.py`。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 航油加注结算清单出单自检
+
+结算清单（`POST /api/fueling/settlement/generate`）出单前先自检，任一项不通过即中止、
+不落半份清单，响应里指出差在哪一行（`issues[].row`、加油编号与原因）：
+
+- 每行必须带齐加油车辆、油料类型、实际油量（加注量）、签收状态、操作人员；
+- 计划/实际油量要能解析成数值，计划油量超过单次加注上限（50000 升）的行列出原因；
+- 列表页、详情页与对账汇总三处条数必须一致（含已签收记录，防止整条丢失）；
+- 表头固定按结算模板顺序：加油编号、对应航班、油料类型、加油车辆、操作人员、
+  计划油量、实际油量、油量差值（实际-计划）、签收状态。
+
+中止后修正差异行（`PATCH /api/fueling/{id}` 补录），再以
+`POST /api/fueling/settlement/generate?resume=true` 从失败行继续自检；全部通过才一次性
+发布清单。每次出单都按当前数据重算历史版本条数；并发提交按版本号只保留最新一版，
+被取代的请求返回 `status=superseded`。`GET /api/fueling/settlement` 查询最近一版结果与
+中止现场，`GET /api/fueling/export` 兼容旧导出入口。
